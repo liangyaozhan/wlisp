@@ -77,6 +77,7 @@ class user_data:public std::enable_shared_from_this<user_data>
 public:
 	virtual ~user_data(){}
 	virtual std::string display() const{ return "<user_data.display not supported>";}
+    virtual std::string subtype()const { return "";}
 	Value apply(const std::vector<Value> &args, Environment &env);
 };
 
@@ -123,6 +124,7 @@ public:
 
     // Is this a builtin function?
     bool is_builtin() {return type == BUILTIN;}
+    bool is_userdata() {return type == USERDATA;}
 
     // Apply this as a function to a list of arguments in a given environment.
     Value apply(const std::vector<Value> &args, Environment &env);
@@ -130,6 +132,10 @@ public:
     Value eval(Environment &env) const;
 
     bool is_number() const ;
+    bool is_int() const {return this->type == INT;}
+    bool is_float() const {return this->type == FLOAT;}
+    bool is_list() const { return this->type == LIST;}
+    bool is_string() const { return this->type == STRING;}
 
     // Get the "truthy" boolean value of this value.
     bool as_bool() const ;
@@ -238,6 +244,30 @@ private:
     std::shared_ptr<user_data> userdata;
     std::function<Value(std::vector<Value>, Environment &)> b;
 };
+
+
+class loop_break :public Error{
+public:
+    Value value;
+    loop_break(Environment &env):Error(Value::string("break"), env, "break without loop"){}
+};
+class loop_continue:public Error {
+public:
+    Value value;
+    loop_continue(Environment &env):Error(Value::string("continue"), env, "continue without loop"){}
+};
+class func_return :public Error{
+public:
+    Value value;
+    func_return(Environment &env):Error(Value::string("return"), env, "return should be used within a function"){}
+};
+class ctrl_c_event :public Error{
+public:
+    Value value;
+    ctrl_c_event(Environment &env):Error(Value::string("ctrl+c"), env, "ctrl+c breaking"){}
+};
+
+
 void eval_args(std::vector<Value> &args, Environment &env);
 
 void global_set(std::string name, Value v);
@@ -250,6 +280,7 @@ std::ostream &operator<<(std::ostream &os, Environment const &e);
 Value run(const std::string &code, Environment &env);
 void repl(Environment &env);
 
+extern volatile bool g_running;
 }
 
 #endif

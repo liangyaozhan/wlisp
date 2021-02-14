@@ -6,8 +6,17 @@
  */
 #include <iostream>
 
+#ifdef _MSC_VER
+#include <windows.h>
+#endif
+
+#include "goap/Action.h"
+#include "goap/Planner.h"
+#include "goap/WorldState.h"
 
 #include "wlisp.hpp"
+
+
 
 const char *buildin_funs = R"(
 (defun dec (n) (- n 1))
@@ -33,128 +42,46 @@ const char *buildin_funs = R"(
             ))
         )
     )
+(defun format (fmt ...) (do
+	(for li (regex-search (regex "`(.*?)`") fmt  )
+		(setq fmt (replace fmt (index li 0) (concat (eval (index li 1) ))))
+	) fmt))
 )";
 
+void winit_do_init();
+void random_init();
 
-class A:public lisp::user_data{
-public:
-	int r = 0;
-	int i = 0;
-	~A(){
-	}
+void math_init();
+void process_init();
+void w_jobq_init();
+void threading_init();
+void threading_ipc_init();
 
-	static lisp::Value make_value(int a, int b) {
-		auto ptr = std::make_shared<A>(a, b);
-		std::string n(std::to_string(ptr->r) + "+" + std::to_string(ptr->i) + "j");
-		lisp::Value ret(n, ptr);
-		return ret;
-	}
-	static lisp::Value make_value(const A& o) {
-		return make_value(o.r, o.i);
-	}
 
-	A(int a, int b):r(a),i(b){
-	}
-	A operator + (const A &o){
-		A t(r + o.r, i + o.i);
-		return t;
-	}
-	A operator - (const A &o){
-		A t(r - o.r, i - o.i);
-		return t;
-	}
-	A operator * (const A &o){
-		int a = r;
-		int b = i;
-		int c = o.r;
-		int d = o.i;
-		A t(a*c - b*d, a*d + b*c);
-		return t;
-	}
-	std::string display() const {
-		std::string a(std::to_string(r) + "+" + std::to_string(i) + "j");
-		return a;
-	}
-};
+#ifdef _MSC_VER
 
-static lisp::Value _A_construct(std::vector<lisp::Value> args, lisp::Environment &env)
-{
-	lisp::eval_args(args, env);
-	return A::make_value(args[0].as_int(), args[1].as_int());
+BOOL WINAPI consoleHandler(DWORD signal) {
+
+    if (signal == CTRL_C_EVENT)
+    {
+		lisp::g_running = false;
+ 		std::cout << "ctrl+c event" << std::endl;
+	}   
+
+    return TRUE;
 }
+#endif
 
-void do_test()
-{
-	lisp::global_set("A", _A_construct);
-	lisp::global_set( "A+", lisp::Value("A+", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
-		if (args.size() != 2) {
-			throw lisp::Error(lisp::Value(), env, args.size() > 2 ? "too many args" : "too few args");
-		}
-		lisp::eval_args(args, env);
-		auto p1 = std::dynamic_pointer_cast<A>(args[0].as_user_data());
-		auto p2 = std::dynamic_pointer_cast<A>(args[1].as_user_data());
-
-		if (p1 == nullptr || p2 == nullptr) {
-			throw lisp::Error(lisp::Value(), env, "A+ nullptr found");
-		}
-
-		auto r = *p1 + *p2;
-
-		return A::make_value(r);
-		}));
-	lisp::global_set("A-", lisp::Value("A-", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
-		if (args.size() != 2) {
-			throw lisp::Error(lisp::Value(), env, args.size() > 2 ? "too many args" : "too few args");
-		}
-		lisp::eval_args(args, env);
-		auto p1 = std::dynamic_pointer_cast<A>(args[0].as_user_data());
-		auto p2 = std::dynamic_pointer_cast<A>(args[1].as_user_data());
-
-		if (p1 == nullptr || p2 == nullptr) {
-			throw lisp::Error(lisp::Value(), env, "A- nullptr found");
-		}
-
-		auto r = *p1 - *p2;
-
-		return A::make_value(r);
-		}));
-	lisp::global_set("A*", lisp::Value("A*", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
-		if (args.size() != 2) {
-			throw lisp::Error(lisp::Value(), env, args.size() > 2 ? "too many args" : "too few args");
-		}
-		lisp::eval_args(args, env);
-		auto p1 = std::dynamic_pointer_cast<A>(args[0].as_user_data());
-		auto p2 = std::dynamic_pointer_cast<A>(args[1].as_user_data());
-
-		if (p1 == nullptr || p2 == nullptr) {
-			throw lisp::Error(lisp::Value(), env, "A* nullptr found");
-		}
-
-		auto r = *p1 * *p2;
-
-		return A::make_value(r);
-		}));
-	lisp::global_set("Ar", lisp::Value("Ar", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
-		if (args.size() != 1) {
-			throw lisp::Error(lisp::Value(), env, args.size() > 1 ? "too many args" : "too few args");
-		}
-		lisp::eval_args(args, env);
-		auto p1 = std::dynamic_pointer_cast<A>(args[0].as_user_data());
-
-		return lisp::Value(p1->r);
-		}));
-	lisp::global_set("Ai", lisp::Value("Ai", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
-		if (args.size() != 1) {
-			throw lisp::Error(lisp::Value(), env, args.size() > 1 ? "too many args" : "too few args");
-		}
-		lisp::eval_args(args, env);
-		auto p1 = std::dynamic_pointer_cast<A>(args[0].as_user_data());
-
-		return lisp::Value(p1->i);
-		}));
-}
 
 int main(int argc, const char **argv) {
+	
+#ifdef _MSC_VER
+	if (!SetConsoleCtrlHandler(consoleHandler, TRUE)) {
+        std::cerr << "ERROR: Could not set control handler" << std::endl; 
+        return 1;
+    }
+#endif
+
     lisp::Environment env;
     std::vector<lisp::Value> args;
     for (int i=0; i<argc; i++)
@@ -162,17 +89,60 @@ int main(int argc, const char **argv) {
     env.set("cmd-args", lisp::Value(args));
 
     lisp::run(buildin_funs, env);
-    do_test();
+	math_init();
+	winit_do_init();
+	w_jobq_init();
+	threading_init();
+	threading_ipc_init();
+	process_init();
+	random_init();
+
+	std::string image(argv[0]);
+	std::string app_path;
+
+	int pos = image.rfind('/');
+	if (pos == image.npos ){
+		pos = image.rfind('\\');
+		if (pos != image.npos){
+			app_path = image.substr(0, pos+1);
+		}
+	}
+	std::cout << "app-path:" << app_path << std::endl;
+	lisp::global_set("app-path", lisp::Value::string(app_path));
 
     srand(time(NULL));
     try {
+    	//lisp::run(lisp::read_file_contents(argv[2]), env);
+		try {
+			lisp::run(lisp::read_file_contents( app_path + "init.lisp"), env);
+		}catch (lisp::Error &e){
+			std::cerr << "cannot run init.lisp " << e.description() << std::endl;
+		} catch (std::runtime_error &e) {
+			std::cerr << "cannot run init.lisp " << e.what() << std::endl;
+    	}catch (lisp::ctrl_c_event &e){
+			std::cerr << "ctrl+c break" << e.value.display() << std::endl;
+		}catch (...){
+			std::cerr << "unkown expetion" << std::endl;
+		}
+		if (argc > 1){
+			try {
+				lisp::run(lisp::read_file_contents( argv[1] ), env);
+			}catch (lisp::Error &e){
+				std::cerr << "cannot run " << argv[1] << std::endl;
+			} catch (std::runtime_error &e) {
+				std::cerr << "cannot run " << argv[1] << std::endl;
+				std::cerr << e.what() << std::endl;
+			}
+		}
+		
     	repl(env);
-    	lisp::run(lisp::read_file_contents(argv[2]), env);
     } catch (lisp::Error &e) {
         std::cerr << e.description() << std::endl;
     } catch (std::runtime_error &e) {
         std::cerr << e.what() << std::endl;
-    }
+    } catch (...){
+		std::cout << "unkown exception" << std::endl;
+	}
 
     return 0;
 }

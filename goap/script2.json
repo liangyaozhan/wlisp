@@ -1,0 +1,97 @@
+{
+
+  "actions": [
+
+    {
+      "name": "A扣分成功",
+      "cost": "150",
+      "condition": {
+        "分数足够": true
+      },
+      "effect": {
+        "扣分成功": true
+      }
+    },
+    {
+      "name": "A扣分失败",
+      "cost": "150",
+      "condition": {
+        "分数足够": false
+      },
+      "effect": {
+        "扣分成功": false
+      }
+    },
+
+    {
+      "name": "A拉主轮",
+      "cost": "250",
+      "condition": {
+        "主轮静止": true,
+        "扣分成功": true
+      },
+      "effect": {
+        "主轮静止": false
+      }
+    },
+    {
+      "name": "A计算奖项",
+      "cost": "150",
+      "condition": {
+        "主轮静止": false
+      },
+      "effect": {
+        "": false
+      }
+    },
+    {
+      "name": "A奖池选取",
+      "cost": "150",
+      "condition": {
+        "主轮静止": false
+      },
+      "effect": {
+        "": false
+      }
+    },
+    {
+      "name": "A开奖结果",
+      "cost": "150",
+      "condition": {
+        "主轮静止": false
+      },
+      "effect": {
+        "": false
+      }
+    },
+    {
+      "name": "A领取奖项",
+      "cost": "150",
+      "condition": {
+        "主轮静止": false
+      },
+      "effect": {
+        "": false
+      }
+    }
+
+
+    ,
+    {
+      "奖项生成器": true,
+      ""
+    }
+
+  ],
+
+  "states": [
+    {
+      "name": "stateA",
+      "vars": {
+        "var1": true,
+        "var2": false
+      }
+    }
+  ]
+
+}

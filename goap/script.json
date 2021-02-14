@@ -1,0 +1,160 @@
+{
+
+  "actions": [
+    {
+      "name": "scoutStealthily",
+      "cost": "250",
+      "condition": {
+        "enemy_sighted": false,
+        "weapon_in_hand": true
+      },
+      "effect": {
+        "enemy_sighted": true
+      }
+    },
+
+
+    {
+      "name": "scoutRunning",
+      "cost": "150",
+      "condition": {
+        "enemy_sighted": false,
+        "weapon_in_hand": true
+      },
+      "effect": {
+        "enemy_sighted": true
+      }
+    },
+
+
+    {
+      "name": "closeToGunRange",
+      "cost": "2",
+      "condition": {
+        "enemy_sighted": true,
+        "enemy_dead": false,
+        "enemy_in_range": false,
+        "gun_loaded": true
+      },
+      "effect": {
+        "enemy_in_range": true
+      }
+    },
+
+    {
+      "name": "closeToKnifeRange",
+      "cost": "4",
+      "condition": {
+        "enemy_sighted": true,
+        "enemy_dead": false,
+        "enemy_in_close_range": false,
+        "gun_loaded": true
+      },
+      "effect": {
+        "enemy_in_close_range": true
+      }
+    },
+    {
+      "name": "loadGun",
+      "cost": "2",
+      "condition": {
+        "have_ammo": true,
+        "gun_loaded": false,
+        "gun_drawn": true
+      },
+      "effect": {
+        "gun_loaded": true,
+        "have_ammo": false
+      }
+    },
+    {
+      "name": "drawGun",
+      "cost": "1",
+      "condition": {
+        "inventory_gun": true,
+        "weapon_in_hand": false,
+        "gun_drawn": false
+      },
+      "effect": {
+        "gun_drawn": true,
+        "weapon_in_hand": true
+      }
+    },
+    {
+      "name": "holsterGun",
+      "cost": "1",
+      "condition": {
+        "weapon_in_hand": true,
+        "gun_drawn": true
+      },
+      "effect": {
+        "gun_drawn": false,
+        "weapon_in_hand": false
+      }
+    },
+    {
+      "name": "drawKnife",
+      "cost": "1",
+      "condition": {
+        "inventory_knife": true,
+        "weapon_in_hand": false,
+        "knife_drawn": false
+      },
+      "effect": {
+        "knife_drawn": true,
+        "weapon_in_hand": true
+      }
+    },
+    {
+      "name": "sheathKnife",
+      "cost": "1",
+      "condition": {
+        "weapon_in_hand": true,
+        "knife_drawn": false
+      },
+      "effect": {
+        "knife_drawn": true,
+        "weapon_in_hand": false
+      }
+    },
+    {
+      "name": "shootEnemy",
+      "cost": "3",
+      "condition": {
+        "enemy_sighted": true,
+        "enemy_dead": false,
+        "gun_drawn": true,
+        "gun_loaded": true,
+        "enemy_in_range": true
+      },
+      "effect": {
+        "enemy_dead": true
+      }
+    },
+    {
+      "name": "knifeEnemy",
+      "cost": "3",
+      "condition": {
+        "enemy_sighted": true,
+        "enemy_dead": false,
+        "knife_drawn": true,
+        "gun_loaded": true,
+        "enemy_in_close_range": true
+      },
+      "effect": {
+        "enemy_dead": true
+      }
+    }
+  ],
+
+  "states": [
+    {
+      "name": "stateA",
+      "vars": {
+        "var1": true,
+        "var2": false
+      }
+    }
+  ]
+
+}
