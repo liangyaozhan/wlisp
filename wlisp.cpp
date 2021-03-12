@@ -77,9 +77,14 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// HELPER FUNCTIONS ///////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
+void load_default_lib();
+
 
 namespace lisp{
 
+static std::map<std::string, Value> g_global_defs;
+static std::map<std::string, const char *> g_global_defs_doc;
+static volatile bool g_running = true;
 
 std::string read_file_contents( std::string filename) {
     std::ifstream f;
@@ -96,6 +101,11 @@ std::string read_file_contents( std::string filename) {
     f.close();
 
     return contents;
+}
+
+std::shared_ptr<user_data> user_data::shared_from_this()
+{
+    return std::enable_shared_from_this<user_data>::shared_from_this();
 }
 
 Value user_data::apply(const std::vector<Value> &args, Environment &env)
@@ -159,6 +169,12 @@ Value Value::string(const std::string &s) {
 
 	// We use the `str` member to store the string.
 	result.str = s;
+	return result;
+}
+
+Value Value::nil() {
+	Value result;
+	result.type = NIL;
 	return result;
 }
 
@@ -322,6 +338,9 @@ Value Value::pop() {
 Value Value::cast_to_int() const {
 	switch (type) {
 	case INT: return *this;
+    case STRING: {
+        return Value(int(std::atol( this->str.c_str() )));
+    }
 	case FLOAT: return Value(int(stack_data.f));
 	// Only ints and floats can be cast to an int
 	default:
@@ -333,6 +352,9 @@ Value Value::cast_to_int() const {
 Value Value::cast_to_float() const {
 	switch (type) {
 	case FLOAT: return *this;
+    case STRING: {
+        return Value(double(std::atof( this->str.c_str() )));
+    }
 	case INT: return Value(float(stack_data.i));
 	// Only ints and floats can be cast to a float
 	default:
@@ -674,6 +696,8 @@ std::string Value::display() const {
 		return "<" + str + " at " + this->b.target_type().name() + ">";
 	case UNIT:
 		return "@";
+	case NIL:
+		return "<nil>";
 	case USERDATA:
 		if (this->userdata){
 			return this->userdata->display();
@@ -721,6 +745,8 @@ std::string Value::debug() const {
         return "<" + str + " at " + this->b.target_type().name() + ">";
 	case UNIT:
 		return "@";
+	case NIL:
+		return "<nil>";
     case USERDATA:
         if (this->userdata) {
             return this->userdata->display();
@@ -748,6 +774,12 @@ Error::Error(Value v, Environment const &env, const char *msg) : env(env), msg(m
     strcpy(static_buffer, msg);
     cause = new Value;
     *cause = v;
+}
+void Error::set_cause(const Value &v)
+{
+    if (cause){
+        *cause = v;
+    }
 }
 
 Error::Error( const Error &other) : env(other.env), msg(other.msg) {
@@ -783,6 +815,20 @@ std::ostream &operator<<(std::ostream &os, const Environment &e) {
 
 void Environment::set(const std::string &name, const Value &value) {
     defs[name] = value;
+}
+
+void Environment::setp(const std::string &name, const Value &value)
+{
+    Environment *ptr = this->parent_scope;
+    while (ptr != NULL){
+        std::map<std::string, Value>::iterator itr = ptr->defs.find(name);
+        if (itr != ptr->defs.end()){
+            itr->second = value;
+            return ;
+        }
+        ptr = ptr->parent_scope;
+    }
+    throw Error(Value::string("setp"), *this, "var not found in parent");
 }
 
 
@@ -860,10 +906,21 @@ Value Value::apply(const std::vector<Value> &args, Environment &env) {
         // This allows us to write special forms without syntactic sugar.
         // For functions that are not special forms, we just evaluate
         // the arguments before we run the function.
-        return this->b(args, env);
+        if (extened_buildin){
+            return extened_buildin(this, env, [this, &args, &env]()->Value{
+                return this->b(args, env);
+            });
+        } else {
+            return this->b(args, env);
+        }
+        
     case USERDATA:
     	// call user data to construct object
         return this->userdata->apply(args, env);
+    case NIL:
+    case UNIT:
+        return *this;
+        break;
     default:
         // We can only call lambdas and builtins
         throw Error(*this, env, CALL_NON_FUNCTION);
@@ -913,7 +970,18 @@ Value Value::eval(Environment &env) const {
 
 static
 void skip_whitespace(std::string &s, int &ptr) {
-    while (isspace(s[ptr])) { ptr++; }
+    int c = 0;
+    for (int c = s[ptr]; isspace(c) || c == ';'; ) {
+        if (++ptr > s.length()){
+            break;
+        }
+        if (c == ';'){
+            while ( (c=s[ptr]) != '\n' && ptr< s.length()){
+                ptr++;
+            }
+        }
+        c = s[ptr];
+    }
 }
 
 // Parse a single value and increment the pointer
@@ -921,7 +989,7 @@ void skip_whitespace(std::string &s, int &ptr) {
 static
 Value parse(std::string &s, int &ptr) {
     skip_whitespace(s, ptr);
-
+#if 0
     while (s[ptr] == ';') {
         // If this is a comment
         int save_ptr = ptr;
@@ -932,6 +1000,10 @@ Value parse(std::string &s, int &ptr) {
         if (s.substr(ptr, s.length()-ptr-1) == "")
             return Value();
     }
+#else
+    if (s.substr(ptr, s.length()-ptr-1) == "")
+        return Value();
+#endif
 
 
     if (s == "") {
@@ -942,14 +1014,20 @@ Value parse(std::string &s, int &ptr) {
         return Value::quote(parse(s, ptr));
 
     } else if (s[ptr] == '(') {
+        int ptr_old = ptr;
         // If this is a list
         skip_whitespace(s, ++ptr);
 
         Value result = Value(std::vector<Value>());
 
-        while (s[ptr] != ')')
+        while (s[ptr] != ')'){
+            if ( ptr >= s.length()){
+                int n = 100;
+                std::cerr << "Error: mismatch `(` at `" << s.substr(ptr_old, 100) << "`" << std::endl;
+                throw std::runtime_error(MALFORMED_PROGRAM);
+            }
             result.push(parse(s, ptr));
-        
+        }
         skip_whitespace(s, ++ptr);
         return result;
         
@@ -972,7 +1050,11 @@ Value parse(std::string &s, int &ptr) {
         int n = 3;
         while (!(s[ptr + n] == '`' && s[ptr + n +1] == '`'  && s[ptr + n + 2] == '`') ){
             if (ptr + n >= int(s.length()))
+            {
+                std::cerr << "Error: mismatch ``` with position " << ptr << std::endl;
                 throw std::runtime_error(MALFORMED_PROGRAM);
+            }
+                
                 
             if (s[ptr + n] == '\\') n++;
             n++;
@@ -993,6 +1075,8 @@ Value parse(std::string &s, int &ptr) {
                 x.replace(i, 2, "\n");
             else if (x[i] == '\\' && x[i+1] == 't')
                 x.replace(i, 2, "\t");
+            else if (x[i] == '\\' && x[i+1] == '`')
+                x.replace(i, 2, "`");
         }
 
         return Value::string(x);
@@ -1001,7 +1085,10 @@ Value parse(std::string &s, int &ptr) {
         int n = 1;
         while (s[ptr + n] != '\"') {
             if (ptr + n >= int(s.length()))
+            {
+                std::cerr << "Error: mismatch \"" << " at position " << ptr << std::endl;
                 throw std::runtime_error(MALFORMED_PROGRAM);
+            }
                 
             if (s[ptr + n] == '\\') n++;
             n++;
@@ -1042,6 +1129,15 @@ Value parse(std::string &s, int &ptr) {
         skip_whitespace(s, ptr);
         return Value::atom(x);
     } else {
+        int pos = ptr - 20;
+        if (pos < 0) {
+            pos = 0;
+        }
+        int n = ptr + 20;
+        if (n > s.npos){
+            n -= s.npos;
+        }
+        std::cerr << "Error:`" << s.substr(ptr, n) << "...`" << std::endl;
         throw std::runtime_error(MALFORMED_PROGRAM);
     }
 }
@@ -1051,6 +1147,7 @@ static
 std::vector<Value> parse(std::string s) {
     int i=0, last_i=-1;
     std::vector<Value> result;
+
     // While the parser is making progress (while the pointer is moving right)
     // and the pointer hasn't reached the end of the string,
     while (last_i != i && i <= int(s.length()-1)) {
@@ -1058,10 +1155,14 @@ std::vector<Value> parse(std::string s) {
         last_i = i;
         result.push_back(parse(s, i));
     }
-
+#if 0
     // If the whole string wasn't parsed, the program must be bad.
     if (i < int(s.length()))
+    {
+        std::cerr << "whole string wasn't parsed, postion:" << i << std::endl;
         throw std::runtime_error(MALFORMED_PROGRAM);
+    }
+#endif   
 
     // Return the list of values parsed.
     return result;
@@ -1118,11 +1219,17 @@ namespace builtin {
 
     // Define a variable with a value (SPECIAL FORM)
     Value define(std::vector<Value> args, Environment &env) {
-        if (args.size() != 2)
+        int n = args.size();
+        if (n < 2 || (n % 2)){
             throw Error(Value("define", define), env, args.size() > 2? TOO_MANY_ARGS : TOO_FEW_ARGS);
-            
-        Value result = args[1].eval(env);
-        env.set(args[0].display(), result);
+        }
+
+        Value result;
+        for (int i=0; i<n; i+=2){
+            result = args[i+1].eval(env);
+            env.set(args[i].as_atom(), result);
+        }
+
         return result;
     }
 
@@ -1182,7 +1289,6 @@ namespace builtin {
             }
 
         }
-        done:;
         return acc;
     }
     // Iterate through a list of values in a list (SPECIAL FORM)
@@ -1213,7 +1319,6 @@ namespace builtin {
                 }
             }
         }
-        done:;
         return acc;
     }
 
@@ -1254,6 +1359,24 @@ namespace builtin {
 
     // Print several values and return the last one
     Value print(std::vector<Value> args, Environment &env) {
+        // Is not a special form, so we can evaluate our args.
+        eval_args(args, env);
+
+        if (args.size() < 1)
+            throw Error(Value("print", print), env, TOO_FEW_ARGS);
+
+        Value acc;
+        for (size_t i=0; i<args.size(); i++) {
+            acc = args[i];
+            std::cout << acc.display();
+            if (i < args.size() - 1)
+                std::cout << " ";
+        }
+        std::cout << std::flush;
+        return acc;
+    }
+    // Print several values and return the last one
+    Value println(std::vector<Value> args, Environment &env) {
         // Is not a special form, so we can evaluate our args.
         eval_args(args, env);
 
@@ -1739,8 +1862,10 @@ namespace builtin {
     }
 }
 
-volatile bool g_running = true;
-
+void lisp_try_break()
+{
+    g_running = false;
+}
 void repl(Environment &env) {
 #ifdef USE_STD
     std::string code;
@@ -1774,6 +1899,14 @@ void repl(Environment &env) {
 		        std::cerr << "ctrl+c break" << e.value.display() << std::endl;
 	        } catch (std::runtime_error &e) {
                 std::cerr << e.what() << std::endl;
+            } catch (lisp::func_return &e){
+                std::cout << "return should be used in function:" << e.value.display() << std::endl;
+            } catch (lisp::loop_continue &e){
+                std::cout << "continue should be used in loop:" << e.value.display() << std::endl;
+            } catch (lisp::loop_break &e){
+                std::cout << "break should be used in loop:" << e.value.display() << std::endl;
+            } catch (lisp::exception &e){
+                std::cout << "unhandled lisp-exception:" << e.value.display() << std::endl;
             }
         }
     }
@@ -1794,18 +1927,51 @@ bool Environment::has(const std::string &name) const {
     else return false;
 }
 
-static std::map<std::string, Value> g_global_defs;
 
-void global_set(std::string name, Value v)
+void global_set(std::string name, Value v, const char *doc)
 {
 	g_global_defs[name] = v;
+    g_global_defs_doc[name] = doc;
 }
+
+static bool __do_and(const Value &v)
+{
+    if (v.is_list()){
+        auto list = v.as_list();
+        for (auto &li:list){
+            if (!__do_and(li)){
+                return false;
+            }
+        }
+        
+    } else if (!v.as_bool()){
+        return false;
+    }
+    return true;
+}
+static bool __do_or(const Value &v)
+{
+    if (v.is_list()){
+        auto list = v.as_list();
+        for (auto &li:list){
+            if (__do_or(li)){
+                return true;
+            }
+        }
+        
+    } else if (v.as_bool()){
+        return true;
+    }
+    return false;
+}
+
 
 class global_init
 {
 public:
 	global_init(){
 #define __DEF_ONE(xx, f) g_global_defs[#xx] = Value(#xx,  f)
+#define __DEF_ONE_DOC(xx, doc) g_global_defs_doc[#xx] = doc
 		// Meta operations
 		__DEF_ONE(eval, builtin::eval);
 		__DEF_ONE(type, builtin::get_type_name);
@@ -1857,6 +2023,7 @@ public:
 		__DEF_ONE(exit, builtin::exit);
 		__DEF_ONE(quit, builtin::exit);
 		__DEF_ONE(print, builtin::print);
+		__DEF_ONE(println, builtin::println);
 		__DEF_ONE(input, builtin::input);
 		__DEF_ONE(random, builtin::random);
 		__DEF_ONE(include, builtin::include);
@@ -1872,166 +2039,232 @@ public:
 	    // Constants
 		g_global_defs["endl"] = Value::string("\n");
 
+        __DEF_ONE_DOC(read-file, "<filename> -> content:string");
+        __DEF_ONE_DOC(filter, "<func> <list> -> filtered:list");
+        __DEF_ONE_DOC(tail, "<list> -> list:list");
+        __DEF_ONE_DOC(reduce, "<lambda(item)> <acc> <list> -> <acc>");
+        __DEF_ONE_DOC(map, "<lambda(item)> <list> -> <new-list>");
+        __DEF_ONE_DOC(replace, "<src> <substr> <replacement>");
+        __DEF_ONE_DOC(tail, "<list> -> <list-first-removed>");
+        __DEF_ONE_DOC(remove, "<list> <index> -> <new-list>");
+        __DEF_ONE_DOC(write-file, "<filename> <content:string> -> success:bool");
+
+        lisp::global_set("setp", lisp::Value("setp", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value{
+            int n = args.size();
+            if (args.size() < 2 || (args.size() % 2)){
+                throw Error(Value::string("setp"), env, TOO_FEW_ARGS);
+            }
+            lisp::Value result = lisp::Value::nil();
+            for (int i=0; i<n; i+=2){
+                result = args[i + 1].eval(env);
+                env.setp(args[i].as_atom(), result);
+            }
+            return result;
+        }));
 
         lisp::global_set( "help", lisp::Value("help", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
             lisp::eval_args(args, env);
             int n = 0;
-            std::cout << "wlisp golbal definitions:\n";
+            std::stringstream ss;
+            ss << "wlisp golbal definitions:\n";
             for (auto &a:g_global_defs){
                 n++;
-                std::cout << "    " << a.first;
+                ss << "    " << a.first;
                 int len = a.first.length();
                 for (int i=len; i<24; i++){
-                    std::cout << " ";
+                    ss << " ";
                 }
-                std::cout << a.second.display().substr(0, 50) << "\n";
+                auto it = g_global_defs_doc.find(a.first);
+                if (it != g_global_defs_doc.end() && strlen(it->second) > 0){
+                    ss << it->second << "\n";
+                } else {
+                    ss << a.second.display().substr(0, 50) << "\n";
+                }
             }
-            std::cout << std::endl;
-            return lisp::Value(int(n));
+            ss << "\n";
+            return lisp::Value::string(ss.str());
 
         }));
-        lisp::global_set( "break", lisp::Value("break", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
+        lisp::global_set( "nil", lisp::Value::nil());
+        lisp::global_set( "is-nil", lisp::Value("is-nil", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
+            lisp::eval_args(args, env);
             if (args.size() != 1){
-                throw Error(Value::string("break"), env, args.size() > 1? TOO_MANY_ARGS : TOO_FEW_ARGS);
+                throw Error(Value::string("is-nil"), env, args.size() > 1? TOO_MANY_ARGS : TOO_FEW_ARGS);
             }
+            return lisp::Value( int(args[args.size()-1].is_nil() ));
+        })     
+        );
+        lisp::global_set( "break", lisp::Value("break", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
             lisp::eval_args(args, env);
             loop_break b(env);
-            b.value = args[0];
-            throw b;
-        }));
-        lisp::global_set( "continue", lisp::Value("continue", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
-            if (args.size() != 1){
-                throw Error(Value::string("continue"), env, args.size() > 1? TOO_MANY_ARGS : TOO_FEW_ARGS);
+            if (args.size()>0){
+                b.value = args[args.size()-1];
             }
+            throw b;
+        }),
+            R"((break <list>))"        
+        );
+        lisp::global_set( "continue", lisp::Value("continue", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
             lisp::eval_args(args, env);
             loop_continue b(env);
-            b.value = args[0];
-            throw b;
-        }));
-        lisp::global_set( "return", lisp::Value("return", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
-            if (args.size() != 1){
-                throw Error(Value::string("return"), env, args.size() > 1? TOO_MANY_ARGS : TOO_FEW_ARGS);
+            if (args.size()>0){
+                b.value = args[args.size()-1];
             }
+
+            throw b;
+        }), R"((continue <list>))"
+        );
+        lisp::global_set( "return", lisp::Value("return", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
             lisp::eval_args(args, env);
             func_return b(env);
-            b.value = args[0];
+            if (args.size()>0){
+                b.value = args[args.size()-1];
+            }
             throw b;
-        }));
+        }), "(return <value> ...)");
+        lisp::global_set( "and", lisp::Value("and", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
+            //lisp::eval_args(args, env);
+            if (args.size() == 0){
+                return lisp::Value::nil();
+            } else {
+                for (auto &a:args){
+                    auto v = a.eval(env);
+                    if (!__do_and(v)){
+                        return lisp::Value(int(0));
+                    }
+                }
+                return lisp::Value(int(1));
+            }
+        }), "(and <value> ...)");
+        lisp::global_set( "or", lisp::Value("or", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
+            //lisp::eval_args(args, env);
+            if (args.size() == 0){
+                return lisp::Value::nil();
+            } else {
+                for (auto &a:args){
+                    auto v = a.eval(env);
+                    if (__do_or(v)){
+                        return lisp::Value(int(1));
+                    }
+                }
+                return lisp::Value(int(0));
+            }
+        }), "(or <value> ...)");
+        lisp::global_set( "try", lisp::Value("try", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
+            //lisp::eval_args(args, env);
+            if (args.size() < 3){
+                throw Error(Value::string("try"), env, TOO_FEW_ARGS);
+            }
+            int n = args.size();
+            std::vector<int> positions;
+            positions.reserve(4);
+            //int catch_pos = 0;
+            for (int i=1; i<n; i++){
+                if ( args[i].is_atom() && args[i].display() == "catch" ){
+                    positions.push_back(i);
+                    i++;
+                    if (i >= n){
+                        throw Error(Value::string("try"), env, TOO_FEW_ARGS);
+                    }
+                }
+            }
+            if (positions.size() == 0){
+                throw Error(Value::string("try"), env, "catch not found");
+            }
+            std::vector<std::string> catch_types;
+            std::vector<std::string> catch_vars;
+            catch_types.reserve(positions.size());
+            for (auto pos:positions){
+                if (!args[pos+1].is_list()){
+                    throw Error(Value::string("try"), env, "(args-list) expected after `catch`");
+                }
+                auto var_list = args[pos+1].as_list();
+                if (var_list.size() == 1){
+                    catch_types.push_back("");
+                    catch_vars.push_back(var_list[0].as_atom());
+                } else {
+                    catch_types.push_back(var_list[0].as_atom());
+                    catch_vars.push_back(var_list[1].as_atom());
+                }
+            }
+            
+            lisp::Value ret;
+            try {
+                int first_pos = positions[0];
+                for (int i=0; i<first_pos; i++){
+                    ret = args[i].eval(env);
+                }
+            }catch (lisp::exception &e) {
+                const std::string &etype = e.type;
+                for (int i=0; i<catch_types.size(); i++){
+                    auto &t = catch_types[i];
+                    if (t.empty() || t == etype){
+                        lisp::Environment new_env;
+                        new_env.combine(env);
+                        new_env.set(catch_vars[i], e.value);
+                        ret = e.value;
+                        int end = n;
+                        if ( i+1 < positions.size() ){
+                            end = positions[i+1];
+                        }
+                        for (int pc=positions[i]+2; pc<end; pc++){
+                            ret = args[pc].eval(new_env);
+                        }
+                        return ret;
+                    }
+                }
+                throw e;
+            }
+            return ret;
+        }), "(try ... catch ([type-name] var) ... [catch ([type-name] var)] ... )");
+        lisp::global_set( "throw", lisp::Value("throw", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
+            int size = args.size();
+            if (size != 1 && size != 2){
+                throw Error(Value::string("throw"), env, "throw need 1/2 args");
+            }
+            lisp::exception b(env);
+            if (size == 1){
+                b.value = args[0].eval(env);
+            }else {
+                b.type  = args[0].as_atom();
+                b.value = args[1].eval(env);
+            }
+            throw b;
+        }), R"((throw [type] <value>))"
+        );
+        lisp::global_set( "is-list", lisp::Value("is-list", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
+            if (args.size() != 1){
+                throw Error(Value::string("is-list"), env, "is-list need 1 arg");
+            }
+            lisp::eval_args(args, env);
+            return lisp::Value(args[0].is_list());
+        }), "<value>: is-list:bool"
+        );
 
 
 #undef __DEF_ONE
 	}
 };
 
+std::function<Value(Value*, Environment &e, std::function<Value()>)> extened_buildin = nullptr;
+
 global_init g_lisp_global_initer;
 
 // Get the value associated with this name in this scope
-Value Environment::get(const std::string &name) const {
-#if 0
-    // Meta operations
-    if (name == "eval")  return Value("eval",  builtin::eval);
-    if (name == "type")  return Value("type",  builtin::get_type_name);
-    if (name == "parse") return Value("parse", builtin::parse);
-
-    // Special forms
-    if (name == "do")     return Value("do",     builtin::do_block);
-    if (name == "if")     return Value("if",     builtin::if_then_else);
-    if (name == "for")    return Value("for",    builtin::for_loop);
-    if (name == "while")  return Value("while",  builtin::while_loop);
-    if (name == "scope")  return Value("scope",  builtin::scope);
-    if (name == "quote")  return Value("quote",  builtin::quote);
-    if (name == "defun")  return Value("defun",  builtin::defun);
-    if (name == "define") return Value("define", builtin::define);
-    if (name == "lambda") return Value("lambda", builtin::lambda);
-
-    // Comparison operations
-    if (name == "=")  return Value("=",  builtin::eq);
-    if (name == "!=") return Value("!=", builtin::neq);
-    if (name == ">")  return Value(">",  builtin::greater);
-    if (name == "<")  return Value("<",  builtin::less);
-    if (name == ">=") return Value(">=", builtin::greater_eq);
-    if (name == "<=") return Value("<=", builtin::less_eq);
-
-    // Arithmetic operations
-    if (name == "+") return Value("+", builtin::sum);
-    if (name == "-") return Value("-", builtin::subtract);
-    if (name == "*") return Value("*", builtin::product);
-    if (name == "/") return Value("/", builtin::divide);
-    if (name == "%") return Value("%", builtin::remainder);
-
-    // List operations
-    if (name == "list")   return Value("list",   builtin::list);
-    if (name == "insert") return Value("insert", builtin::insert);
-    if (name == "index")  return Value("index",  builtin::index);
-    if (name == "remove") return Value("remove", builtin::remove);
-
-    if (name == "len")    return Value("len",   builtin::len);
-
-    if (name == "push")   return Value("push",  builtin::push);
-    if (name == "pop")    return Value("pop",   builtin::pop);
-    if (name == "head")   return Value("head",  builtin::head);
-    if (name == "tail")   return Value("tail",  builtin::tail);
-    if (name == "first")  return Value("first", builtin::head);
-    if (name == "last")   return Value("last",  builtin::pop);
-    if (name == "range")  return Value("range", builtin::range);
-
-    // Functional operations
-    if (name == "map")    return Value("map",    builtin::map_list);
-    if (name == "filter") return Value("filter", builtin::filter_list);
-    if (name == "reduce") return Value("reduce", builtin::reduce_list);
-
-    // IO operations
-    #ifdef USE_STD
-    if (name == "exit")       return Value("exit",       builtin::exit);
-    if (name == "quit")       return Value("quit",       builtin::exit);
-    if (name == "print")      return Value("print",      builtin::print);
-    if (name == "input")      return Value("input",      builtin::input);
-    if (name == "random")     return Value("random",     builtin::random);
-    if (name == "include")    return Value("include",    builtin::include);
-    if (name == "read-file")  return Value("read-file",  builtin::read_file);
-    if (name == "write-file") return Value("write-file", builtin::write_file);
-    #endif
-
-    // String operations
-    if (name == "debug")   return Value("debug",   builtin::debug);
-    if (name == "replace") return Value("replace", builtin::replace);
-    if (name == "display") return Value("display", builtin::display);
-    
-    // Casting operations
-    if (name == "int")   return Value("int",   builtin::cast_to_int);
-    if (name == "float") return Value("float", builtin::cast_to_float);
-
-    // Constants
-    if (name == "endl") return Value::string("\n");
-#else
-    {
-		std::map<std::string, Value>::const_iterator itr = g_global_defs.find(name);
-		if (itr != g_global_defs.end()){
-			return itr->second;
-		}
+Value Environment::get(const std::string &name) const
+{
+    const Environment *ptr = this;
+    while (ptr != NULL){
+        std::map<std::string, Value>::const_iterator itr = ptr->defs.find(name);
+        if (itr != ptr->defs.end()){
+            return itr->second;
+        }
+        ptr = ptr->parent_scope;
     }
-#endif
-#if 1
-    {
-    	const Environment *ptr = this;
-    	while (ptr != NULL){
-    	    std::map<std::string, Value>::const_iterator itr = ptr->defs.find(name);
-    	    if (itr != ptr->defs.end()){
-    	    	return itr->second;
-    	    }
-    	    ptr = ptr->parent_scope;
-    	}
+    std::map<std::string, Value>::const_iterator itr = g_global_defs.find(name);
+    if (itr != g_global_defs.end()){
+        return itr->second;
     }
-#else
-    std::map<std::string, Value>::const_iterator itr = defs.find(name);
-    if (itr != defs.end()) return itr->second;
-    else if (parent_scope != NULL) {
-        itr = parent_scope->defs.find(name);
-        if (itr != parent_scope->defs.end()) return itr->second;
-        else return parent_scope->get(name);
-    }
-#endif
-
     throw Error(Value::atom(name), *this, ATOM_NOT_DEFINED);
 }
 

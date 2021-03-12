@@ -19,6 +19,7 @@
 #include <memory>              // unique_ptr
 #include <mutex>               // std::mutex
 #include <vector>
+#include <chrono>
 #include <assert.h>
 #ifndef CHAN_MAX_COUNTER
 #    include <limits>  // std::numeric_limits
@@ -34,6 +35,11 @@ enum class push_policy : unsigned char {
 };
 
 namespace ns_chan {
+    class chan_timeout{
+        public:
+        int thread_count = 0;
+        int wait_count = 0;
+    };
     // 避免惊群
     class cv_t {
         std::condition_variable cv_;
@@ -48,6 +54,22 @@ namespace ns_chan {
                 do {
                     ++wait_count_;
                     cv_.wait(lock);
+                } while (!pred());
+                --thread_count_;
+            }
+        }
+        template <class Predicate>
+        void wait_for(std::unique_lock<std::mutex> &lock, std::chrono::milliseconds ms, Predicate pred) {
+            if (!pred()) {
+                ++thread_count_;
+                do {
+                    ++wait_count_;
+                    if (cv_.wait_for(lock, ms) == std::cv_status::timeout){
+                        chan_timeout ct;
+                        ct.thread_count = thread_count_;
+                        ct.wait_count = wait_count_;
+                        throw ct;
+                    }
                 } while (!pred());
                 --thread_count_;
             }
@@ -135,10 +157,49 @@ namespace ns_chan {
 
             return !closed_;
         }
+        // 入chan，支持move语义
+        template <typename TR>
+        bool push(TR &&data, std::chrono::milliseconds ms) {
+            std::unique_lock<std::mutex> lock(mutex_);
+            cv_push_.wait_for(lock, ms, [&]() { return policy_ != push_policy::blocking || free_count() > 0 || closed_; });
+            if (closed_) {
+                return false;
+            }
+
+            if (!push_thread_unsafe(std::forward<TR>(data))) {
+                return false;
+            }
+
+            cv_pop_.notify_one();
+            if (cv_overflow_ != nullptr) {
+                const size_t old = first_;
+                cv_overflow_->wait(lock, [&]() { return old != first_ || closed_; });
+            }
+
+            return !closed_;
+        }
 
         bool pop(std::function<void(T &&data)> consume) {
             std::unique_lock<std::mutex> lock(mutex_);
             cv_pop_.wait(lock, [&]() { return !is_empty() || closed_; });
+            if (is_empty()) {
+                return false;  // 已关闭
+            }
+
+            T &target = data(first_++);
+            consume(std::move(target));
+            target.~T();
+
+            if (cv_overflow_ != nullptr) {
+                cv_overflow_->notify_one();
+            }
+            cv_push_.notify_one();
+
+            return true;
+        }
+        bool pop_try(std::function<void(T &&data)> consume, std::chrono::milliseconds ms) {
+            std::unique_lock<std::mutex> lock(mutex_);
+            cv_pop_.wait_for(lock, ms, [&]() { return !is_empty() || closed_; });
             if (is_empty()) {
                 return false;  // 已关闭
             }
@@ -240,12 +301,22 @@ public:
     template <typename TR>
     bool operator<<(TR &&data) {
         unsigned int index = data_->push_.fetch_add(1, std::memory_order_acq_rel);
-        return data_->queue_[index % length()]->push(std::forward<TR>(data));
+        bool ok data_->queue_[index % length()]->push(std::forward<TR>(data));
+        return ok
     }
     template <typename TR>
     bool push(TR &&data) {
         unsigned int index = data_->push_.fetch_add(1, std::memory_order_acq_rel);
-        return data_->queue_[index % length()]->push(std::forward<TR>(data));
+        
+        bool ok = data_->queue_[index % length()]->push(std::forward<TR>(data));
+        return ok;
+    }
+    template <typename TR>
+    bool push(TR &&data, std::chrono::milliseconds ms) {
+        unsigned int index = data_->push_.fetch_add(1, std::memory_order_acq_rel);
+        
+        bool ok = data_->queue_[index % length()]->push(std::forward<TR>(data), ms);
+        return ok;
     }
 
     void close() {
@@ -271,6 +342,12 @@ public:
         unsigned int index = data_->pop_.fetch_add(1, std::memory_order_acq_rel);
         std::unique_ptr<T> d;
         data_->queue_[index % length()]->pop([&d](T &&target) { d.reset(new T(std::forward<T>(target))); });
+        return d;
+    }
+    std::unique_ptr<T> pop(std::chrono::milliseconds ms) {
+        unsigned int index = data_->pop_.fetch_add(1, std::memory_order_acq_rel);
+        std::unique_ptr<T> d;
+        data_->queue_[index % length()]->pop_try([&d](T &&target) { d.reset(new T(std::forward<T>(target))); }, ms);
         return d;
     }
     size_t length() const {

@@ -36,7 +36,19 @@ public:
             std::cerr << e.description() << std::endl;
         } catch (std::runtime_error &e) {
             std::cerr << e.what() << std::endl;
-        }
+        }catch (lisp::ctrl_c_event &e){
+			std::cerr << "thread " << std::this_thread::get_id() << " ctrl+c break" << e.value.display() << std::endl;
+		}catch (lisp::func_return &e){
+			std::cout << "thread " << std::this_thread::get_id() << " return should be used in function:" << e.value.display() << std::endl;
+		} catch (lisp::loop_continue &e){
+			std::cout << "thread " << std::this_thread::get_id() << " continue should be used in a loop:" << e.value.display() << std::endl;
+		} catch (lisp::loop_break &e){
+			std::cout << "thread " << std::this_thread::get_id() << " break should be used in a loop:" << e.value.display() << std::endl;
+		} catch (lisp::exception &e){
+			std::cout << "thread " << std::this_thread::get_id() << " unhandled lisp-exception:" << e.value.display() << std::endl;
+		}catch (...){
+			std::cerr << "thread " << std::this_thread::get_id() << " unkown expetion" << std::endl;
+		}
     }){
 
     }
@@ -44,7 +56,9 @@ public:
     
     ~w_thread(){
         if (thread.joinable()){
-            thread.join();
+            thread.detach();
+            std::cerr << "thread detached. tid:" << std::this_thread::get_id() << std::endl;
+            //thread.join();
         }
     }
 
@@ -83,7 +97,7 @@ void threading_init()
         }
         lisp::eval_args(args, env);
         return w_thread::make_value(args, env);
-    }));
+    }), "(thread <lambda>) -> <thread>");
     
     lisp::global_set( "thread-id", lisp::Value("thread-id", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
         if (args.size()==0) {
@@ -94,7 +108,7 @@ void threading_init()
         std::stringstream ss;
         ss << ptr->thread.get_id();
         return lisp::Value( atol(ss.str().c_str() ));
-    }));
+    }), "<thread> -> threadid:int");
     lisp::global_set( "thread-join", lisp::Value("thread-join", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
         if (args.size()==0) {
             throw lisp::Error(lisp::Value::string("thread-join"), env, "need 1 args");
@@ -105,13 +119,13 @@ void threading_init()
             ptr->thread.join();
         }
         return ptr->exit_value;
-    }));
+    }), "<thread>");
     
     lisp::global_set( "tid", lisp::Value("tid", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
         std::stringstream ss;
         ss << std::this_thread::get_id();
         return lisp::Value( atol( ss.str().c_str() ));
-    }));
+    }), "current thread id");
     lisp::global_set( "sleep", lisp::Value("sleep", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
         if (args.size() != 1) {
             throw lisp::Error(lisp::Value::string("thread"), env, "need 1 args");
@@ -120,7 +134,7 @@ void threading_init()
         int ms = args[0].as_int();
         std::this_thread::sleep_for( std::chrono::milliseconds(ms) );
         return args[0];
-    }));
+    }),"(sleep <ms>) -> <ms>");
     
 }
 
@@ -181,35 +195,55 @@ void threading_ipc_init()
     lisp::global_set( "queue", lisp::Value("queue", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
         lisp::eval_args(args, env);
         return w_queue::make_value(args, env);
-    }));
-    lisp::global_set( "queue-length", lisp::Value("queue-length", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
-        if (args.size() != 1){
-            throw lisp::Error(lisp::Value::string("queue-length"), env, "need 1 args");
-        }
-        lisp::eval_args(args, env);
-        auto ptr = w_queue::ptr_from_value(args[0], env);
-        return lisp::Value( int(ptr->qdata.length()) );
-    }));
+    }), "(queue <size> [flags]) flags: 'blocking','discard','discard-old'");
     
     lisp::global_set( "queue-push", lisp::Value("queue-push", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
-        if (args.size() != 2){
-            throw lisp::Error(lisp::Value::string("queue-push"), env, "need 2 args");
+        int n = args.size();
+        if (n != 2 && n != 3 ){
+            throw lisp::Error(lisp::Value::string("queue-push"), env, "need 2|3 args");
         }
         lisp::eval_args(args, env);
         auto ptr = w_queue::ptr_from_value(args[0], env);
-        return lisp::Value(int(ptr->qdata.push(args[1])));
-    }));
+        if (n == 2)
+        {
+            return lisp::Value(int(ptr->qdata.push(args[1])));
+        } else{
+            try {
+                return lisp::Value(int(ptr->qdata.push(args[1], std::chrono::milliseconds(args[2].as_int()))));
+            } catch (ns_chan::chan_timeout ct) {
+                (void)ct;
+                lisp::exception e(env);
+                e.type = "timeout";
+                e.value = lisp::Value::string("queue-push timeout");
+                throw e;
+            }
+        }
+    }), "(queue-push <q> <value> [ms]) -> int|timeout exception");
 
     lisp::global_set( "queue-pop", lisp::Value("queue-pop", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
-        if (args.size() != 1){
-            throw lisp::Error(lisp::Value::string("queue-pop"), env, "need 1 args");
+        if (args.size() != 1 && args.size() != 2){
+            throw lisp::Error(lisp::Value::string("queue-pop"), env, "need 1|2 args");
         }
         lisp::eval_args(args, env);
         auto ptr = w_queue::ptr_from_value(args[0], env);
         lisp::Value v;
-        bool ok = (ptr->qdata >> v);
+        if (args.size() == 2){
+            try {
+                auto pu = ptr->qdata.pop(std::chrono::milliseconds(args[1].as_int()));
+                v = *pu;
+            } catch (ns_chan::chan_timeout ct) {
+                (void)ct;
+                lisp::exception e(env);
+                e.type = "timeout";
+                e.value = lisp::Value::string("queue-pop timeout");
+                throw e;
+            }
+        } else {
+            auto pu = ptr->qdata.pop();
+            v = *pu;
+        }
         return v;
-    }));
+    }), "(<q> [ms]) -> value|timeout exception");
     lisp::global_set( "queue-is-closed", lisp::Value("queue-is-closed", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
         if (args.size() != 1){
             throw lisp::Error(lisp::Value::string("queue-is-closed"), env, "need 1 args");
@@ -217,7 +251,7 @@ void threading_ipc_init()
         lisp::eval_args(args, env);
         auto ptr = w_queue::ptr_from_value(args[0], env);
         return lisp::Value(int(ptr->qdata.is_closed()));
-    }));
+    }), "(queue-is-closed) -> int");
 
     lisp::global_set( "queue-close", lisp::Value("queue-close", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
         if (args.size() != 1){
@@ -227,7 +261,7 @@ void threading_ipc_init()
         auto ptr = w_queue::ptr_from_value(args[0], env);
         ptr->qdata.close();
         return args[0];
-    }));
+    }),"(queue-close <q>) -> <q>");
 }
 
 #include <random>
@@ -273,17 +307,17 @@ void random_init()
     lisp::global_set( "random-device-rand", lisp::Value("random-device-rand", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
         lisp::eval_args(args, env);
         return lisp::Value(int(std::random_device()()));
-    }));
+    }), "<> -> int");
     lisp::global_set( "random", lisp::Value("random", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
         lisp::eval_args(args, env);
         return w_random::make_value(args, env);
-    }));
+    }), "<> ->rd");
     lisp::global_set( "random-seed", lisp::Value("random-seed", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
         lisp::eval_args(args, env);
         auto ptr = w_random::ptr_from_value(args[0], env);
         ptr->rd.seed(args[1].as_int());
         return args[0];
-    }));
+    }), "<rd> <seed:int> -> args[0]");
     lisp::global_set( "random-rand", lisp::Value("random-rand", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
         lisp::eval_args(args, env);
         auto ptr = w_random::ptr_from_value(args[0], env);
@@ -297,6 +331,83 @@ void random_init()
             return ret;
         }
         return lisp::Value(int(ptr->rd()));
-    }));
+    }), "<rd> [list-size] -> int|(list)");
+    struct rand_uidg
+    {
+        std::mt19937 rd;
+        int min = 0;
+        int max = 0;
+        std::uniform_int_distribution<> distrib;
+        int gen(){ return distrib(rd);}
+    };
+    lisp::global_set( "uniform-int-distribution", lisp::Value("uniform-int-distribution", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
+        if (args.size() != 2 && args.size() != 3){
+            throw lisp::exception(env, "syntax", "uniform-int-distribution need 2|3 args");
+        }
+        lisp::eval_args(args, env);
+        auto ptr = lisp::extend<rand_uidg>::make_value();
+        int begin = args[0].as_int();
+        int end = args[1].as_int();
+        auto &a = ptr->cxx_value;
+        if (args.size() == 3){
+            a.rd.seed( args[2].as_int() );
+        } else {
+            a.rd.seed( std::random_device()() );
+        }
+        
+        a.min = begin;
+        a.max = end;
+        a.distrib = std::uniform_int_distribution<>(begin, end);
+        return ptr->value();
+    }), "<begin> <end> [seed] -> obj");
+    lisp::global_set( "uniform-int-distribution-get", lisp::Value("uniform-int-distribution-get", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
+        if (args.size() != 1){
+            throw lisp::exception(env, "syntax", "uniform-int-distribution-get need 1 args");
+        }
+        lisp::eval_args(args, env);
+
+        auto ptr = lisp::extend<rand_uidg>::ptr_from_value(args[0], env);
+        auto &a = ptr->cxx_value;
+        return lisp::Value(int(a.gen()));
+    }), "<obj> -> int");
+    struct rand_discret
+    {
+        std::mt19937 rd;
+        std::discrete_distribution<> distrib;
+        int gen(){ return distrib(rd);}
+    };
+    lisp::global_set( "discrete-distribution", lisp::Value("discrete-distribution", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
+        if (args.size() != 1 && args.size() != 2){
+            throw lisp::exception(env, "syntax", "discrete-distribution need 1|2 args");
+        }
+        lisp::eval_args(args, env);
+        auto ptr = lisp::extend<rand_discret>::make_value();
+        auto array = args[0].as_list();
+        auto &a = ptr->cxx_value;
+        if (args.size() == 2){
+            a.rd.seed( args[1].as_int() );
+        } else {
+            a.rd.seed( std::random_device()() );
+        }
+        std::vector<int> arr;
+        arr.reserve(array.size());
+        for (auto &x:array){
+            arr.push_back(x.as_int());
+        }
+        a.distrib = std::discrete_distribution<int>(arr.begin(), arr.end());
+        return ptr->value();
+    }), "<int-list> [seed] -> obj");
+    lisp::global_set( "discrete-distribution-get", lisp::Value("discrete-distribution-get", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
+        if (args.size() != 1){
+            throw lisp::exception(env, "syntax", "discrete-distribution-get need 1 args");
+        }
+        lisp::eval_args(args, env);
+
+        auto ptr = lisp::extend<rand_discret>::ptr_from_value(args[0], env);
+        auto &a = ptr->cxx_value;
+        return lisp::Value(int(a.gen()));
+    }), "<obj> -> int");
+    
+    
 }
 

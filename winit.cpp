@@ -4,6 +4,58 @@
 #include "winit.hpp"
 #include "wlisp.hpp"
 
+#include "w_global_auto_init.hpp"
+
+
+void winit_do_init();
+void random_init();
+void math_init();
+void process_init();
+void w_jobq_init();
+void threading_init();
+void threading_ipc_init();
+void w_exception_init();
+void w_file_init();
+
+static void __state_init();
+static void __dict_init();
+static void __regex_init();
+void __data_init();
+void __string_init();
+void w_tcpserver_init();
+void w_stream_socket_init();
+void fifo_buffer_init();
+void w_data_mysql();
+void w_data_json();
+
+DEF_MODULE("string", __string_init);
+DEF_MODULE("data", __data_init);
+
+DEF_MODULE("action", winit_do_init);
+DEF_MODULE("random", random_init);
+DEF_MODULE("math", math_init);
+DEF_MODULE("process", process_init);
+DEF_MODULE("jobq", w_jobq_init);
+DEF_MODULE("thread", threading_init);
+DEF_MODULE("ipc", threading_ipc_init);
+DEF_MODULE("exception", w_exception_init);
+DEF_MODULE("file", w_file_init);
+DEF_MODULE("state", __state_init);
+DEF_MODULE("dict", __dict_init);
+DEF_MODULE("regex", __regex_init);
+DEF_MODULE("tcpserver", w_tcpserver_init);
+DEF_MODULE("stream-socket", w_stream_socket_init);
+DEF_MODULE("fifo-buffer", fifo_buffer_init);
+DEF_MODULE("mysql", w_data_mysql);
+DEF_MODULE("json", w_data_json);
+
+namespace lisp{
+void load_default_lib()
+{
+    module_init_all();
+}
+}
+
 
 static lisp::Value _winit_construct(std::vector<lisp::Value> args, lisp::Environment &env)
 {
@@ -25,15 +77,27 @@ static lisp::Value _w_state_construct(std::vector<lisp::Value> args, lisp::Envir
     }
 }
 
-static void __state_init();
-static void __dict_init();
-static void __regex_init();
 
+const char *buildin_funs = R"(
+(defun dec (n) (- n 1))
+(defun inc (n) (+ n 1))
+(defun not (x) (if x 0 1))
+(defun neg (n) (- 0 n))
+(defun format (fmt ...) (do
+	(for li (regex-search (regex "`(.*?)`") fmt  )
+		(setq fmt (replace fmt (index li 0) (concat (eval (index li 1) ))))
+	) fmt))
+(defun in (v lis ...) (if (= 0 {size}) (if (is-list lis) (for i lis (if (in v i) (return 1) 0) ) (= v lis))	(for-range i (list 0 {size}) (if (in v (eval (concat '{ i '}))) (return 1) 0))))
+)";
 void winit_do_init()
 {
-    __dict_init();
-    __state_init();
-    __regex_init();
+    lisp::Environment env_tmp;
+    lisp::run(buildin_funs, env_tmp);
+    auto &map = env_tmp.get_map();
+    for (auto &v:map){
+        lisp::global_set(v.first, v.second);
+    }
+
 
     lisp::global_set("action", _winit_construct);
 
@@ -473,86 +537,74 @@ static void __state_init()
 static void __dict_init()
 {
     lisp::global_set( "dict", lisp::Value("dict", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
-        if (args.size()>0){
-            lisp::eval_args(args, env);
-            return w_dict::make_value(args[0].as_string(), env);
-        } else {
-            return w_dict::make_value("", env);
+        if (args.size() != 00){
+            throw lisp::exception(env, "syntax", "dict need 0 args");
         }
-    }));
+        auto ptr = lisp::extend<std::map<std::string, lisp::Value>>::make_value();
+        return ptr->value();
+    }), "<name> -> <dict>");
     lisp::global_set( "dict-print", lisp::Value("dict-print", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
         if (args.size() != 1) {
             throw lisp::Error(lisp::Value::string("dict-print"), env, "need 1 args");
         }
         lisp::eval_args(args, env);
-        auto p_dict = w_dict::ptr_from_value(args[0], env);
-        std::cout << "dict:" << p_dict->dict.size() << "{\n";
-        for (auto &x:p_dict->dict){
+        auto p_dict = lisp::extend<std::map<std::string,lisp::Value>>::ptr_from_value(args[0], env);
+        std::cout << "dict:" << p_dict->cxx_value.size() << "{\n";
+        for (auto &x:p_dict->cxx_value){
             std::cout << "\t" << x.first << ": " << x.second.display() << "\n";
         }
         std::cout << "}" << std::endl;
         return args[0];
-    }));
+    }), "<dict> -> <dict>");
     lisp::global_set( "dict-set", lisp::Value("dict-set", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
         if (args.size() < 3) {
             throw lisp::Error(lisp::Value::string("dict-set"), env, "need >=3 args");
         }
         lisp::eval_args(args, env);
-        auto p_dict = w_dict::ptr_from_value(args[0], env);
+        auto p_dict = lisp::extend<std::map<std::string,lisp::Value>>::ptr_from_value(args[0], env);
 
         int n = (args.size()-1)/2;
         for (int i=0; i<n; i++){
             std::string k = args[1+i*2].as_string();
-            p_dict->dict[k] = args[2+i*2];
+            p_dict->cxx_value[k] = args[2+i*2];
         }
 
         return args[0];
-    }));
+    }), "<dict> <key> <value> [... <key> <value>] -> <dict>");
     lisp::global_set( "dict-get", lisp::Value("dict-get", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
         if (args.size() != 2 ) {
             throw lisp::Error(lisp::Value::string("dict-get"), env, "need 2 args");
         }
         lisp::eval_args(args, env);
-        auto p_dict = w_dict::ptr_from_value(args[0], env);
+        auto p_dict = lisp::extend<std::map<std::string,lisp::Value>>::ptr_from_value(args[0], env);
         auto key = args[1].as_string();
-        auto it = p_dict->dict.find(key);
-        if (it != p_dict->dict.end()){
+        auto it = p_dict->cxx_value.find(key);
+        if (it != p_dict->cxx_value.end()){
             return it->second;
         }
         throw lisp::Error(lisp::Value::string("dict-get"), env, "not found");
-    }));
+    }), "<dict> <key> -> value");
     lisp::global_set( "dict-keys", lisp::Value("dict-keys", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
         if (args.size() != 1 ) {
             throw lisp::Error(lisp::Value(), env, "need 1 args");
         }
         lisp::eval_args(args, env);
-        auto p_dict = w_dict::ptr_from_value(args[0], env);
+        auto p_dict = lisp::extend<std::map<std::string,lisp::Value>>::ptr_from_value(args[0], env);
         std::vector<lisp::Value> ret;
-        ret.reserve(p_dict->dict.size());
-        for (auto &x:p_dict->dict){
+        ret.reserve(p_dict->cxx_value.size());
+        for (auto &x:p_dict->cxx_value){
             ret.push_back( lisp::Value::string(x.first) );
         }
         return ret;
-    }));
+    }), "<dict> -> string-list");
     lisp::global_set( "dict-size", lisp::Value("dict-size", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
         if (args.size() != 1 ) {
             throw lisp::Error(lisp::Value(), env, "need 1 args");
         }
         lisp::eval_args(args, env);
-        auto p_dict = w_dict::ptr_from_value(args[0], env);
-        return lisp::Value(int(p_dict->dict.size()));
-    }));
-    // lisp::global_set( "calltest", lisp::Value("calltest", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
-    //     lisp::eval_args(args, env);
-        
-    //     auto v = env.get("func");
-    //     std::cout << "v.eval v=" << v.display() << std::endl;
-    //     std::vector<lisp::Value> a;
-    //     auto ret = v.apply(a, env);
-    //     std::cout << "v.eval ret=" << ret.display() << std::endl;
-    //     return ret;
-    // }));
-    
+        auto p_dict = lisp::extend<std::map<std::string,lisp::Value>>::ptr_from_value(args[0], env);
+        return lisp::Value(int(p_dict->cxx_value.size()));
+    }), "<dict> -> size");
 }
 
 static bool __reg_match_list(const std::vector<lisp::Value> &list, const std::regex &reg)
@@ -616,7 +668,7 @@ static void __regex_init()
         }
         lisp::eval_args(args, env);
         return w_regex::make_value(args[0].as_string(), env);
-    }));
+    }), "<regex-string> -> regex");
     lisp::global_set( "regex-is-match", lisp::Value("regex-is-match", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
         if (args.size() < 2 ) {
             throw lisp::Error(lisp::Value(), env, "need >=2 args");
@@ -637,7 +689,7 @@ static void __regex_init()
             }
         }
         return lisp::Value(int(1));
-    }));
+    }), "<regex> <string:string-list> -> bool");
     lisp::global_set( "regex-match", lisp::Value("regex-match", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
         if (args.size() != 2 ) {
             throw lisp::Error(lisp::Value(), env, "need 2 args");
@@ -654,7 +706,7 @@ static void __regex_init()
             results.push_back(lisp::Value::string(str));
         }
         return results;
-    }));
+    }), "<regex> <string> -> matchs:string-list");
     lisp::global_set( "regex-search", lisp::Value("regex-search", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
         if (args.size() != 2 ) {
             throw lisp::Error(lisp::Value(), env, "need 2 args");
@@ -677,7 +729,7 @@ static void __regex_init()
         }
 
         return results;
-    }));
+    }), "<regex> <string> ->matches:string-list");
     lisp::global_set( "regex-replace", lisp::Value("regex-replace", [](std::vector<lisp::Value> args, lisp::Environment& env)->lisp::Value {
         if (args.size() != 3 && args.size() != 4 ) {
             throw lisp::Error(lisp::Value(), env, "need 3 or 4 args");
@@ -731,5 +783,6 @@ static void __regex_init()
             }
         }
         return lisp::Value::string(std::regex_replace(content, p_regex->regex, replace, flags));
-    }));
+    }), "<regex> <content:string> <replace:string> [flags|(flags)]-> replaced-string; flags:no-copy|first-only|not-bol|not-eol|not-bow|not-eow|any|not-null|continuous|prev-avail");
 }
+

@@ -94,7 +94,7 @@ public:
 			throw lisp::Error(lisp::Value::string("process-redirect"), env, (std::string("find cannot open for write. ") + filename).c_str());
 		}
 
-		while (1)
+		while (is_running())
 		{
         	std::array<char, 256> buffer = {};
 			DWORD bytesRead = 0;
@@ -133,7 +133,7 @@ public:
 		char szPipeOut[MY_PIPE_BUFFER_SIZE*2+1];
 		::ZeroMemory(szPipeOut, sizeof(szPipeOut));
 
-		while (1)
+		while (is_running())
 		{
         	std::array<char, 256> buffer = {};
 			DWORD bytesRead = 0;
@@ -144,6 +144,7 @@ public:
 				{
 					throw lisp::Error(lisp::Value::string("process-read"), env, (std::string("system error, reading pipe last-error:") + std::to_string(err)).c_str());
 				}
+				std::cout << "not peek pipe " << err << std::endl;
 				break;
 			}
 			if (bytesAvailable > 0 || bytesRead > 0){

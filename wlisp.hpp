@@ -12,14 +12,32 @@
 #include <memory>
 #include <functional>
 
+#pragma warning(disable:4365)
+#pragma warning(disable:4018)
+#pragma warning(disable:4061)
+#pragma warning(disable:4625)
+#pragma warning(disable:4820)
+#pragma warning(disable:4251)
+
+#ifdef BUILD_STATIC_LIB
+#   define WLISP_API
+#else
+#   ifdef WLISP_API_Exports
+#       define WLISP_API __declspec(dllexport)
+#   else
+#       define WLISP_API __declspec(dllimport)
+#       define HIDE_INTERNAL 1
+#   endif
+#endif
+
 namespace lisp{
-std::string read_file_contents( std::string filename);
+std::string WLISP_API read_file_contents( std::string filename);
 
 // Forward declaration for Environment class definition
-class Value;
+class WLISP_API Value;
 
 // An instance of a function's scope.
-class Environment {
+class WLISP_API Environment {
 public:
     // Default constructor
     Environment() : parent_scope(NULL) {}
@@ -33,12 +51,15 @@ public:
     Value get(const std::string &name) const;
     // Set the value associated with this name in this scope
     void set(const std::string &name, const Value &value);
+    // Set the value associated with this name in parent's scope
+    void setp(const std::string &name, const Value &value);
 
     void combine(const Environment &other);
 
     void set_parent_scope(Environment *parent) {
         parent_scope = parent;
     }
+    const std::map<std::string,Value> &get_map(){ return this->defs;}
     
     // Output this scope in readable form to a stream.
     friend std::ostream &operator<<(std::ostream &os, const Environment &v);
@@ -49,9 +70,8 @@ private:
     Environment *parent_scope;
 };
 
-
 // An exception thrown by the lisp
-class Error {
+class WLISP_API Error {
 public:
     // Create an error with the value that caused the error,
     // the scope where the error was found, and the message.
@@ -62,6 +82,7 @@ public:
 
     // Get the printable error description.
     std::string description();
+    void set_cause(const Value &v);
 private:
     Value *cause;
     Environment env;
@@ -72,16 +93,17 @@ private:
 // and the environment to run the function in.
 typedef Value (*Builtin)(std::vector<Value>, Environment &);
 
-class user_data:public std::enable_shared_from_this<user_data>
+class WLISP_API user_data :public  std::enable_shared_from_this<user_data>
 {
 public:
 	virtual ~user_data(){}
 	virtual std::string display() const{ return "<user_data.display not supported>";}
-    virtual std::string subtype()const { return "";}
+    virtual std::string subtype()const { return typeid(*this).name();}
+    std::shared_ptr<user_data> shared_from_this();
 	Value apply(const std::vector<Value> &args, Environment &env);
 };
 
-class Value {
+class WLISP_API Value {
 public:
     ////////////////////////////////////////////////////////////////////////////////
     /// CONSTRUCTORS ///////////////////////////////////////////////////////////////
@@ -106,6 +128,7 @@ public:
 
     // Construct a string
     static Value string(const std::string &s);
+    static Value nil();
 
     // Construct a lambda function
     Value(const std::vector<Value> &params, const Value &ret, Environment const &env);
@@ -123,8 +146,8 @@ public:
     std::vector<std::string> get_used_atoms()const;
 
     // Is this a builtin function?
-    bool is_builtin() {return type == BUILTIN;}
-    bool is_userdata() {return type == USERDATA;}
+    bool is_builtin() const {return type == BUILTIN;}
+    bool is_userdata() const {return type == USERDATA;}
 
     // Apply this as a function to a list of arguments in a given environment.
     Value apply(const std::vector<Value> &args, Environment &env);
@@ -136,6 +159,9 @@ public:
     bool is_float() const {return this->type == FLOAT;}
     bool is_list() const { return this->type == LIST;}
     bool is_string() const { return this->type == STRING;}
+    bool is_nil() const { return this->type == NIL;}
+    bool is_atom() const { return this->type == ATOM;}
+    bool is_lambda() const { return this->type == LAMBDA;}
 
     // Get the "truthy" boolean value of this value.
     bool as_bool() const ;
@@ -230,7 +256,8 @@ private:
         LAMBDA,
         BUILTIN,
         UNIT,
-		USERDATA
+		USERDATA,
+        NIL
     } type;
 
     union {
@@ -245,42 +272,101 @@ private:
     std::function<Value(std::vector<Value>, Environment &)> b;
 };
 
-
-class loop_break :public Error{
+class loop_break{
 public:
     Value value;
-    loop_break(Environment &env):Error(Value::string("break"), env, "break without loop"){}
+    loop_break(Environment &env){}
 };
-class loop_continue:public Error {
+class loop_continue {
 public:
     Value value;
-    loop_continue(Environment &env):Error(Value::string("continue"), env, "continue without loop"){}
+    loop_continue(Environment &env){}
 };
-class func_return :public Error{
+class func_return{
 public:
     Value value;
-    func_return(Environment &env):Error(Value::string("return"), env, "return should be used within a function"){}
+    func_return(Environment &env){}
 };
-class ctrl_c_event :public Error{
+class ctrl_c_event{
 public:
     Value value;
-    ctrl_c_event(Environment &env):Error(Value::string("ctrl+c"), env, "ctrl+c breaking"){}
+    ctrl_c_event(Environment &env){}
 };
 
+class exception{
+public:
+    std::string type;
+    Value value;
+    exception(Environment &env, std::string t="", std::string msg=""):type(t),value(Value::string(msg)){}
+};
 
-void eval_args(std::vector<Value> &args, Environment &env);
-
-void global_set(std::string name, Value v);
-static inline void global_set(std::string name, Builtin f){
-	global_set(name, Value(name,f));
+void WLISP_API eval_args(std::vector<Value> &args, Environment &env);
+void WLISP_API global_set(std::string name, Value v, const char *doc = "");
+static inline void global_set(std::string name, Builtin f, const char *doc = ""){
+	global_set(name, Value(name,f), doc);
 }
-std::ostream &operator<<(std::ostream &os, Environment const &e);
+std::ostream & operator<<(std::ostream &os, Environment const &e);
 
 // Execute code in an environment
-Value run(const std::string &code, Environment &env);
-void repl(Environment &env);
+Value WLISP_API run(const std::string &code, Environment &env);
+void WLISP_API repl(Environment &env);
+void WLISP_API lisp_try_break();
 
-extern volatile bool g_running;
+#if !defined(HIDE_INTERNAL) || defined(BUILD_STATIC_LIB)
+
+extern std::function<Value(Value*, Environment &e, std::function<Value()>)> extened_buildin;
+
+#endif
+
+template<class T>
+class extend:public lisp::user_data{
+public:
+	typedef extend<T> type;
+	T cxx_value;
+	std::string name;
+
+	static std::shared_ptr<type> make_value() {
+		auto ptr = std::make_shared<type>();
+        if (!ptr) {
+            throw std::runtime_error("no memory");
+        }
+        ptr->name = typeid(type).name();
+		return ptr;
+	}
+    lisp::Value value(){
+        auto p = this->shared_from_this();
+        return lisp::Value(name, p);
+    }
+    static std::shared_ptr<type> ptr_from_value(const lisp::Value &v, lisp::Environment &env){
+        auto p = std::dynamic_pointer_cast<type>(v.as_user_data());
+        if (!p){
+            throw lisp::Error(lisp::Value::string("ptr casting result is nullptr"), env, "ptr casting result is nullptr");
+        }
+        return p;
+    }
+
+	std::string display() const {
+		return std::string(name) + std::to_string((int64_t)this);
+	}
+};
+
+template <class T>
+bool user_data_type_match(const Value &v){
+    if (!v.is_userdata()){
+        return false;
+    }
+    auto p = v.as_user_data();
+    return typeid(lisp::extend<T>) == typeid(*p.get());
+}
+
+template <class T>
+bool user_data_type_match(std::shared_ptr<lisp::user_data> p){
+    return typeid(lisp::extend<T>) == typeid(*p.get());
+}
+
+void 
+WLISP_API load_default_lib();
+
 }
 
 #endif

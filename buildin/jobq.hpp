@@ -26,6 +26,8 @@
 
 #include "list.h"
 
+#pragma warning(disable:4820)
+
 /*
  * for debug
  */
